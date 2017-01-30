@@ -1,0 +1,115 @@
+#!/usr/bin/python
+
+# Start up ROS pieces.
+import roslib; 
+import rosbag
+import rospy
+import cv2
+import cv
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge, CvBridgeError
+from std_msgs.msg import Int32, String
+
+# Reading bag filename from command line or roslaunch parameter.
+import os
+import sys
+from subprocess import call
+import errno
+
+def mkdirs_p(names):
+    try:
+         map(os.makedirs, names)
+    except OSError as e:
+        if e.errno != errno.EEXIST:
+	    raise
+
+def save_img(bridge, msg, folder, f, formats):
+    try:
+        cv_image = bridge.imgmsg_to_cv2(msg, formats)
+    except CvBridgeError, e:
+        print e
+    timestr = "%.6f" % msg.header.stamp.to_sec()
+    image_name = os.path.join(sys.path[0], folder, timestr+".png")
+    #image_name = str(save_dir)+"/"+timestr+"_left"+".pgm"
+    cv.SaveImage(image_name, cv.fromarray(cv_image))
+    f.write(timestr + ".png" + "\n")
+    
+def save_pose_str(folder,msg,time):
+    timestr = str(time)
+    time_fl = float(timestr) / 10e8
+    timestr = "%.6f" % time_fl 
+    # print (sys.path[0], "\n")
+    txt_file_name = os.path.join(sys.path[0], folder, timestr+".txt")
+    # txt_file_name = os.path.join(folder, timestr+".txt")
+    f = open(txt_file_name,'a')
+    f.write(str(msg) + "\n")
+    f.close()
+
+# Main function.    
+if __name__ == '__main__':
+    
+    assert len(sys.argv) > 1, "not enough command line arguments provided"
+    
+    dirs = ["left", "right", "undistorted", "distorted", "depth", "2dpose_img"]#,"2dpose_str"]
+    files = [open(name + ".txt", "a") for name in dirs]
+    topics = ["/camera/left/image_rect_color", "/camera/right/image_rect_color",
+          "/camera/fotonic/image/undistort", "/camera/fotonic/image",
+          "/camera/depth/image_rect_color", "/pose_estimate/image"]#,
+          #"/pose_estimate/str"]
+    formats = ["bgr8", "bgr8", "bgr8", "bgr8", "16UC1", "bgr8"]#, "uchar"]
+    mkdirs_p(dirs)
+    
+    dirs_files = zip(dirs, files, formats)
+
+    key = dict(zip(topics, dirs_files))
+    # Initialize the node and name it.
+    rospy.init_node("EXTRACTION_NODE")
+    try:
+        filename = os.path.join(sys.path[0], sys.argv[1])
+        #rospy.loginfo("Bag filename = %s", filename)
+	
+        # Use a CvBridge to convert ROS images to OpenCV images so they can be saved.
+        bridge = CvBridge()
+	ct = 0	
+        # Open bag file.
+        with rosbag.Bag(filename, 'r') as bag:		
+
+            for (topic, message, t) in bag.read_messages(topics = topics):
+
+                if ct % 50 == 0: rospy.loginfo("Processed %d messages", ct) 
+                save_img(bridge, message, *key[topic])
+		ct += 1
+
+        [f.close() for f in files]
+
+    except Exception as e:
+	rospy.loginfo(e)
+
+
+
+	
+    call(["rosrun", "pcl_ros", "bag_to_pcd", filename, "/camera/point_cloud/cloud", "pcd/zed"])
+    call(["rosrun", "pcl_ros", "bag_to_pcd", filename, "/fotonic/point_cloud/cloud", "pcd/fotonic"])
+
+    with open("zed_pcd.txt", "a") as zed_pcl, open("fotonic_pcd.txt", "a") as fotonic_pcl:
+	for f in os.listdir("pcd/zed"):
+		time = f.rsplit(".pcd")[0]
+		zed_pcl.write(time + " " + f + "\n")
+	for f in os.listdir("pcd/fotonic"):
+		time = f.rsplit(".pcd")[0]
+		fotonic_pcl.write(time + " " + f + "\n")
+
+
+    bag = rosbag.Bag(filename)
+    pose_dirs = ["2dpose_str"]
+    save_dir = "2dpose_str"
+    mkdirs_p(pose_dirs)
+    for topic, msg, t in bag.read_messages(topics=['/pose_estimate/str']):
+        save_pose_str(save_dir,msg,t)
+
+        print "save joint at time =", t, "\n"
+        # print topic
+        # print msg
+    bag.close()
+
+
